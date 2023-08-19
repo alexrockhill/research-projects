@@ -38,6 +38,11 @@ ACPC_COORDSYS = {
     "iEEGCoordinateUnits": "m"
 }
 
+TEMPLATE_COORDSYS = {
+    "iEEGCoordinateSystem": TEMPLATE,
+    "iEEGCoordinateUnits": "m",
+}
+
 
 def print_status(sub, task):
     sub_dir = op.join(f'{task}_BIDS', "derivatives", "ieeg-preprocessing", f"sub-{sub}")
@@ -472,6 +477,13 @@ def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     raw.set_montage(montage_warped, on_missing="warn")
     mne.io.write_info(template_info_fname, raw.info)
     nib.save(elec_image, op.join(work_dir, "ieeg", "elec_image.mgz"))
+    coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
+                             f'sub-{sub}_space-{TEMPLATE}_coordsystem.tsv')
+    df = electrodes_tsv(raw.info)
+    df.to_csv(coordsys_fname, sep='\t', index=False)
+    if not op.isfile(op.splitext(coordsys_fname)[0] + '.json'):
+        with open(op.splitext(coordsys_fname)[0] + '.json', 'w') as fid:
+            fid.write(json.dumps(TEMPLATE_COORDSYS, indent=4))
 
 
 def _get_pd_ch_names(raw):
