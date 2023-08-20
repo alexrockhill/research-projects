@@ -438,8 +438,9 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     df = electrodes_tsv(raw.info)
     df.to_csv(coordsys_fname, sep='\t', index=False)
     if not op.isfile(op.splitext(coordsys_fname)[0] + '.json'):
+        t1_fname = op.join(subjects_dir, f'sub-{sub}', 'mri', 'T1.mgz')
         with open(op.splitext(coordsys_fname)[0] + '.json', 'w') as fid:
-            fid.write(json.dumps(ACPC_COORDSYS, indent=4))
+            fid.write(json.dumps(dict(ACPC_COORDSYS, IntendedFor=t1_fname), indent=4))
 
 
 def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
@@ -775,53 +776,6 @@ def find_events(sub, task, root):
                      sep='\t', index=False)
 
 
-def save_to_bids(sub, task, root, work_dir, subjects_dir):
-    info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
-    if not op.isfile(info_fname):
-        raise ValueError(
-            "Please find the channel positions first, so "
-            "that the edf data is complete"
-        )
-    raw_fname = input("Intracranial recording file path?\t").strip()
-    raw = mne.io.read_raw(raw_fname)
-    info = mne.io.read_info(info_fname)
-    _ensure_recon(sub, "trans")
-    trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
-    annot = mne.read_annotations(
-        op.join(work_dir, "ieeg", f"sub-{sub}_task-{task}_run-{run}_annot.fif")
-    )
-    raw.set_annotations(annot)
-    raw.rename_channels(
-        {
-            ch: ch.replace("-20000", "").replace("-2000", "").replace("-200", "")
-            for ch in raw.ch_names
-        }
-    )
-    raw.drop_channels([ch for ch in ["Event", "C127", "C128"] if ch in raw.ch_names])
-    raw.set_channel_types({ch: "seeg" for ch in raw.ch_names if ch != "Event"})
-    bids_path = mne_bids.BIDSPath(subject=str(sub), task=task, run=run, root=root)
-    ch_pos = {
-        ch["ch_name"]
-        .replace("-20000", "")
-        .replace("-2000", "")
-        .replace("-200", ""): ch["loc"][:3]
-        for ch in info["chs"]
-    }
-    montage = mne.channels.make_dig_montage(ch_pos, coord_frame="head")
-    montage.apply_trans(trans)
-    mne_bids.convert_montage_to_ras(
-        montage, subject=f"sub-{sub}", subjects_dir=subjects_dir
-    )
-    mne_bids.write_raw_bids(
-        raw,
-        bids_path,
-        anonymize=dict(daysback=40000),
-        montage=montage,
-        acpc_aligned=True,
-        overwrite=True,
-    )
-
-
 if __name__ == "__main__":
     fs_subjects_dir = op.join(os.environ['FREESURFER_HOME'], 'subjects')
     template_t1_fname = op.join(os.environ['FREESURFER_HOME'], 'subjects',
@@ -862,6 +816,6 @@ if __name__ == "__main__":
     do_step('Import images', import_images, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
     do_step("Align CT", align_CT, sub, subjects_dir)
-    do_step("Find contacts", find_contacts, sub)
-    do_step("Warp to template", warp_to_template, sub)
-    do_step("Save ieeg to BIDS", save_to_bids, sub, task, subjects_dir)
+    do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
+    do_step("Warp to template", warp_to_template, sub, root, work_dir,
+            subjects_dir, fs_subjects_dir)
