@@ -11,6 +11,7 @@ import numpy as np
 from collections import OrderedDict
 import time
 from shutil import which, copyfile
+from contextlib import redirect_stdout
 from subprocess import run, Popen, PIPE
 from multiprocessing import Pool
 from dipy.align import affine_registration
@@ -23,6 +24,7 @@ from pd_parser.parse_pd import _read_tsv, _to_tsv, _load_data
 from pandas import read_csv, DataFrame
 import matplotlib.pyplot as plt
 from templateflow import api as tflow
+from AFQ.api.group import GroupAFQ
 
 TEMPLATE = "MNI152NLin2009cAsym"
 INSET = 30  # this inset and theta for defacing was chosen to work well
@@ -45,19 +47,23 @@ TEMPLATE_COORDSYS = {
 
 
 def print_status(sub, root, work_dir):
-    for events_fname in [f for f in os.listdir(op.join(root, 'ieeg')) if
-                         f.endswith('events.tsv')]:
-        name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
-        print('Task data file complete: {}'.format(name_dict['task']))
+    ieeg_dir = op.join(root, f'sub-{sub}', 'ieeg')
+    if op.isfile(ieeg_dir):
+        for events_fname in [f for f in os.listdir(ieeg_dir) if
+                             f.endswith('events.tsv')]:
+            name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
+            print('Task data file complete: {}'.format(name_dict['task']))
     for name, fname in zip(
         [
             "Import MR",
+            "Import DWI",
             "Import CT",
             "Find Contacts",
             "Warp to Template",
         ],
         [
             op.join(work_dir, 'anat' "T1.mgz"),
+            op.join(root, f'sub-{sub}', 'dwi', f'sub-{sub}_dwi.nii.gz'),
             op.join(work_dir, 'anat', "CT.mgz"),
             op.join(work_dir, "ieeg", "ch_pos.fif"),
             op.join(work_dir, "ieeg", f"{TEMPLATE}_ch_pos.fif"),
@@ -203,14 +209,21 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     landmarks = mne.transforms.apply_trans(brain_template.affine, landmarks)  # RAS
     # transform to individual T1 space
     landmarks = mne.transforms.apply_trans(np.linalg.inv(reg_affine), landmarks)
+    landmarks_vox = mne.transforms.apply_trans(np.linalg.inv(t1.affine), landmarks)
 
     t1_defaced = deface(t1, landmarks, inset=INSET, theta=THETA)
 
     # save to BIDS
     t1_acpc_fname = op.join(work_dir, 'anat', 'T1.mgz')
+    os.makedirs(anat_dir, exist_ok=True)
     nib.save(t1_defaced, op.join(anat_dir, f'sub-{sub}_T1w.nii.gz'))
     if t1_json_fname:
-        copyfile(t1_json_fname, op.join(anat_dir, f'sub-{sub}_T1w.json'))
+        with open(t1_json_fname, "r") as fid:
+            scan_info = json.load(fid)
+        scan_info['AnatomicalLandmarks'] = \
+            dict(LPA=landmarks_vox[0], NAS=landmarks_vox[1], RPA=landmarks_vox[2])
+        with open(op.join(anat_dir, f'sub-{sub}_T1w.json'), 'w') as fid:
+            fid.write(json.dumps(scan_info, indent=4))
     t1_acpc = mne.transforms.apply_volume_registration(
         t1_defaced, brain_template, np.linalg.inv(reg_affine))
     nib.save(t1_acpc, t1_acpc_fname)
@@ -221,7 +234,12 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
         t2_defaced = deface(t2, landmarks, reg_affine)
         nib.save(t2_defaced, op.join(anat_dir, f'sub-{sub}_T2w.nii.gz'))
         if t2_json_fname:
-            copyfile(t2_json_fname, op.join(anat_dir, f'sub-{sub}_T2w.json'))
+            with open(t2_json_fname, "r") as fid:
+                scan_info = json.load(fid)
+            scan_info['AnatomicalLandmarks'] = \
+                dict(LPA=landmarks_vox[0], NAS=landmarks_vox[1], RPA=landmarks_vox[2])
+            with open(op.join(anat_dir, f'sub-{sub}_T2w.json'), 'w') as fid:
+                fid.write(json.dumps(scan_info, indent=4))
         t2_acpc = mne.transforms.apply_volume_registration(
             t2_defaced, brain_template, np.linalg.inv(reg_affine))
         nib.save(t2_acpc, t2_acpc_fname)
@@ -251,7 +269,52 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
 
     # make head surfaces
     pool = Pool(processes=1)
-    pool.apply_async(make_head_surface, [sub, subjects_dir, t2_acpc_fname])
+    with open(op.join(tmp_dir, f"sub-{sub}_head_surf_output.txt"), "w") as fid:
+        with redirect_stdout(fid):
+            pool.apply_async(make_head_surface, [sub, subjects_dir, t2_acpc_fname])
+
+
+def import_dwi(sub, root, work_dir, subjects_dir):
+    tmp_dir = op.join(work_dir, "tmp")
+    nii_files = print_imported_nii()
+    dwi_fname, dwi_json_fname = choose_file('DWI', nii_files)
+    dwi_dir = op.join(root, f'sub-{sub}', 'dwi')
+    os.makedirs(dwi_dir, exist_ok=True)
+    copyfile(dwi_fname, op.join(dwi_dir, f'sub-{sub}_dwi.nii.gz'))
+    for ext in ('bval', 'bvec'):
+        copyfile(op.splitext(dwi_fname)[0] + f'.{ext}',
+                 op.join(dwi_dir, f'sub-{sub}_dwi.{ext}'))
+    if op.isfile(dwi_json_fname):
+        copyfile(dwi_fname, op.join(dwi_dir, f'sub-{sub}_dwi.json'))
+    # qsiprep
+    derivatives_dir = op.join(root, 'derivatives')
+    license_fname = op.join(os.environ['FREESURFER_HOME'], 'license.txt')
+    work_dir_qsi = op.join(derivatives_dir, 'temp_qsi')
+    cmd = f"qsiprep-docker {root} {derivatives_dir} participant \
+    --participant_label sub-{sub} \
+    --fs-license-file {license_fname} \
+    --work-dir {work_dir_qsi} \
+    --output-resolution 1.25 \
+    --write-graph \
+    -vv"
+    with open(op.join(tmp_dir, f"sub-{sub}_qsiprep_output.txt"), "w") as fid:
+        proc = Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
+    # pyafq
+    pool = Pool(processes=1)
+    with open(op.join(tmp_dir, f"sub-{sub}_pyafq_output.txt"), "w") as fid:
+        with redirect_stdout(fid):
+            pool.apply_async(run_qsi_prep, [proc])
+
+
+def run_qsi_prep(proc, qsiprep_root, subjects_dir):
+    poll = None
+    print('Waiting for qsiprep to finish')
+    while poll is None:
+        time.sleep(60)
+        poll = proc.poll()
+        print(".", end="", flush=True)
+    myafq = GroupAFQ(bids_path=qsiprep_root)
+    myafq.export_all()
 
 
 def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
@@ -283,6 +346,8 @@ def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     landmarks = mne.transforms.apply_trans(t1.affine, landmarks)  # RAS
     # transform to individual CT space
     landmarks = mne.transforms.apply_trans(ct_reg_affine, landmarks)
+    landmarks_vox = mne.transforms.apply_trans(np.linalg.inv(ct.affine), landmarks)
+
     ct_defaced = deface(ct, landmarks, inset=INSET, theta=THETA)
     nib.save(ct_defaced, op.join(anat_dir, f'sub-{sub}_ct.nii.gz'))
 
@@ -299,7 +364,12 @@ def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
 
     nib.save(ct_acpc, op.join(work_dir, 'anat', 'CT.mgz'))
     if ct_json_fname:
-        copyfile(ct_json_fname, op.join(anat_dir, f'sub-{sub}_ct.json'))
+        with open(ct_json_fname, "r") as fid:
+            scan_info = json.load(fid)
+        scan_info['AnatomicalLandmarks'] = \
+            dict(LPA=landmarks_vox[0], NAS=landmarks_vox[1], RPA=landmarks_vox[2])
+        with open(op.join(anat_dir, f'sub-{sub}_ct.json'), 'w') as fid:
+            fid.write(json.dumps(scan_info, indent=4))
 
 
 def make_head_surface(sub, subjects_dir, t2_acpc_fname):
@@ -324,10 +394,10 @@ def _ensure_recon(sub, ftype, subjects_dir):
     assert ftype in ("trans", "T1", "brain")
     if ftype == "trans":
         fname = op.join(
-            subjects_dir, f"sub-{sub}", "mri", "transforms", "talairach.xfm"
+            subjects_dir, sub, "mri", "transforms", "talairach.xfm"
         )
     else:
-        fname = op.join(subjects_dir, f"sub-{sub}", "mri", f"{ftype}.mgz")
+        fname = op.join(subjects_dir, sub, "mri", f"{ftype}.mgz")
     if not op.isfile(fname):
         print(
             "The recon has not gotten far enough yet, pausing here until it "
@@ -433,7 +503,7 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     else:
         raw_fname = input("Intracranial recording file path?\t").strip()
     info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
-    _ensure_recon(sub, "trans")
+    _ensure_recon(f'sub-{sub}', "trans")
     trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     raw = mne.io.read_raw(raw_fname)
     raw = normalize_channel_names(raw)
@@ -831,15 +901,16 @@ if __name__ == "__main__":
     sub = input("Subject ID number?\t")
     task = input("Task?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
-    work_dir = op.join(subjects_dir, "ieeg-preprocessing", f"sub-{sub}")
+    work_dir = op.join(root, "derivatives", "ieeg-preprocessing", f"sub-{sub}")
     for dtype in ('anat', 'ieeg', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
-    print_status(sub, task, subjects_dir, work_dir)
+    print_status(sub, root, work_dir)
     do_step("Find events", find_events, sub, task, root)
     do_step('Convert DICOMs', import_dicom, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
     do_step('Import MR', import_mr, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
+    do_step('Import DWI', import_dwi, sub, root, work_dir, subjects_dir)
     do_step('Import CT', import_ct, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
     do_step("Align CT", align_CT, sub, work_dir, subjects_dir)
