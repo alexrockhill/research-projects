@@ -44,23 +44,23 @@ TEMPLATE_COORDSYS = {
 }
 
 
-def print_status(sub, task):
-    sub_dir = op.join(f'{task}_BIDS', "derivatives", "ieeg-preprocessing", f"sub-{sub}")
+def print_status(sub, root, work_dir):
+    for events_fname in [f for f in os.listdir(op.join(root, 'ieeg')) if
+                         f.endswith('events.tsv')]:
+        name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
+        print('Task data file complete: {}'.format(name_dict['task']))
     for name, fname in zip(
         [
-            "recon-all",
-            "align CT",
-            "make head surface",
-            "find contacts",
-            "warp to template",
+            "Import MR",
+            "Import CT",
+            "Find Contacts",
+            "Warp to Template",
         ],
         [
-            op.join(sub_dir, "mri", "T1.mgz"),
-            op.join(sub_dir, "ct", "CT.mgz"),
-            op.join(sub_dir, "bem", f"sub-{sub}-head.fif"),
-            op.join(sub_dir, "ieeg", "ch_pos.fif"),
-            op.join(sub_dir, "ieeg", f"sub-{sub}_template-{TEMPLATE}_info.fif"),
-            op.join(sub_dir, "ieeg", f"sub-{sub}_task-{task}_annot.fif"),
+            op.join(work_dir, 'anat' "T1.mgz"),
+            op.join(work_dir, 'anat', "CT.mgz"),
+            op.join(work_dir, "ieeg", "ch_pos.fif"),
+            op.join(work_dir, "ieeg", f"{TEMPLATE}_ch_pos.fif"),
         ],
     ):
         status = "done" if op.isfile(fname) else "incomplete"
@@ -129,75 +129,56 @@ def deface(image, landmarks, inset=5, theta=15.0):
     return image
 
 
-def import_images(sub, root, work_dir, subjects_dir, fs_subjects_dir):
+def import_dicom(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     tmp_dir = op.join(work_dir, "tmp")
-    pathway = None
-    while pathway is None:
-        pathway = input('DICOM (d) or nii (i) files? (d/n)\t')
-        if pathway.lower().startswith('d'):
-            pathway = 'd'
-        elif pathway.lower().startswith('n'):
-            pathway = 'n'
-        else:
-            pathway = None
-    if pathway == 'd':
-        fpath = input('DICOM folder (searches all subfolders)?\t').strip()
-        run(f"dcm2niix -o {tmp_dir} -z y {fpath}", shell=True)
-        nii_files = [op.join(tmp_dir, f) for f in os.listdir(tmp_dir)
-                     if f.endswith('nii.gz')]
-        print('\n' * 2)
-        for i, fname in enumerate(nii_files):
-            proc = Popen(['mri_info', fname], stdout=PIPE, stderr=PIPE)
-            mri_info, err = proc.communicate()
-            mri_info = mri_info.decode("utf-8").split('  ')
-            vox_row = [row.strip() for row in mri_info if
-                       row.strip().startswith('voxel sizes')][0]
-            print(f"({i + 1}) {op.basename(fname)} "
-                  f"size={sys.getsizeof(fname) / 1e6} MB {vox_row} mm")
-        print('\n' * 2)
-        for image in ('T1', 'CT', 'T2'):
-            if image == 'T2':
-                print('T2 not required, press enter to skip')
-            idx = None
-            while idx is None:
-                idx = input(f'{image} file (1 - {len(nii_files)})?\t')
-                try:
-                    idx = int(idx) - 1
-                except Exception:
-                    if image == 'T2' and idx == '':
-                        t2_fname = t2_json_fname = None
-                        break
-                    else:
-                        idx = -1
-                if idx < 0 or idx > len(nii_files) - 1:
-                    print(f'Choose (1 - {len(nii_files)})\n')
-                    idx = None
-            if image == 'T1':
-                t1_fname = nii_files[idx]
-                t1_json_fname = t1_fname.replace('nii.gz', 'json')
-            elif image == 'T2':
-                if idx != '':
-                    t2_fname = nii_files[idx]
-                    t2_json_fname = t2_fname.replace('nii.gz', 'json')
+    fpath = input('DICOM folder (searches all subfolders)?\t').strip()
+    run(f"dcm2niix -o {tmp_dir} -z y {fpath}", shell=True)
+
+
+def print_imported_nii():
+    tmp_dir = op.join(work_dir, "tmp")
+    nii_files = [op.join(tmp_dir, f) for f in os.listdir(tmp_dir)
+                 if f.endswith('nii.gz')]
+    print('\n' * 2)
+    for i, fname in enumerate(nii_files):
+        proc = Popen(['mri_info', fname], stdout=PIPE, stderr=PIPE)
+        mri_info, err = proc.communicate()
+        mri_info = mri_info.decode("utf-8").split('  ')
+        vox_row = [row.strip() for row in mri_info if
+                   row.strip().startswith('voxel sizes')][0]
+        print(f"({i + 1}) {op.basename(fname)} "
+              f"size={sys.getsizeof(fname) / 1e6} MB {vox_row} mm")
+    print('\n' * 2)
+    return nii_files
+
+
+def choose_file(ftype, nii_files):
+    if ftype == 'T2':
+        print('T2 not required, press enter to skip')
+    idx = None
+    while idx is None or idx < 0 or idx > len(nii_files) - 1:
+        out = input(f'{ftype} file (1 - {len(nii_files)} or file path)?\t')
+        if op.isfile(out):
+            if op.isfile(out.replace('nii.gz', 'json')):
+                return out, out.replace('nii.gz', 'json')
+            return out, input(f'{ftype} json file path? (enter to skip)\t')
+        try:
+            idx = int(out) - 1
+        except Exception:
+            if ftype == 'T2' and out == '':
+                return None, None
             else:
-                ct_fname = nii_files[idx]
-                ct_json_fname = ct_fname.replace('nii.gz', 'json')
-    elif pathway == 'n':
-        t1_fname = get_file('T1w nii.gz file path?')
-        if op.isfile(t1_fname.replace('nii.gz', 'json')):
-            t1_json_fname = t1_fname.replace('nii.gz', 'json')
-        else:
-            t1_json_fname = get_file('T1w json file path?', required=False)
-        ct_fname = get_file('CT nii.gz file path?')
-        if op.isfile(ct_fname.replace('nii.gz', 'json')):
-            ct_json_fname = ct_fname.replace('nii.gz', 'json')
-        else:
-            ct_json_fname = get_file('CT json file path?', required=False)
-        t2_fname = get_file('T2w nii.gz file path?')
-        if op.isfile(t2_fname.replace('nii.gz', 'json')):
-            t2_json_fname = t2_fname.replace('nii.gz', 'json')
-        else:
-            t2_json_fname = get_file('T2w json file path?', required=False)
+                idx = None
+        if idx is None or idx < 0 or idx > len(nii_files) - 1:
+            print(f'Choose (1 - {len(nii_files)})\n')
+    return nii_files[idx], nii_files[idx].replace('nii.gz', 'json')
+
+
+def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
+    tmp_dir = op.join(work_dir, "tmp")
+    nii_files = print_imported_nii()
+    t1_fname, t1_json_fname = choose_file('T1', nii_files)
+    t2_fname, t2_json_fname = choose_file('T2', nii_files)
 
     anat_dir = op.join(root, f'sub-{sub}', 'anat')
     _ensure_recon(TEMPLATE, 'brain', fs_subjects_dir)
@@ -209,6 +190,12 @@ def import_images(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     # this works the best rather than trying to align the reverse or with the full T1
     reg_affine = mne.transforms.compute_volume_registration(
         brain_template, t1, pipeline='rigids')[0]
+    template_t1_t_fname = op.join(work_dir, 'anat', f'{TEMPLATE}_T1-trans.fif')
+    if op.isfile(template_t1_t_fname):
+        os.remove(template_t1_t_fname)
+    mne.transforms.Transform(fro='ras', to='ras', trans=reg_affine).save(
+        template_t1_t_fname)
+
     landmarks = mne._freesurfer.get_mni_fiducials(TEMPLATE, fs_subjects_dir)
     landmarks = np.asarray([landmark['r'] for landmark in landmarks])  # in surface RAS
     landmarks = mne.transforms.apply_trans(  # surface RAS to voxels
@@ -232,7 +219,7 @@ def import_images(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     if t2_fname:
         t2 = nib.load(t2_fname)
         t2_defaced = deface(t2, landmarks, reg_affine)
-        nib.save(t2_defaced, op.join(work_dir, 'anat', f'sub-{sub}_T2w.nii.gz'))
+        nib.save(t2_defaced, op.join(anat_dir, f'sub-{sub}_T2w.nii.gz'))
         if t2_json_fname:
             copyfile(t2_json_fname, op.join(anat_dir, f'sub-{sub}_T2w.json'))
         t2_acpc = mne.transforms.apply_volume_registration(
@@ -244,36 +231,6 @@ def import_images(sub, root, work_dir, subjects_dir, fs_subjects_dir):
         np.array(t1_defaced.dataobj) > 50, [1])[0]
     renderer.mesh(*verts.T, tris, 'gray')
     renderer.screenshot(filename=op.join(work_dir, 'figures', 'T1_deface.png'))
-
-    # rough CT alignment for defacing
-    print('Pre-registering CT to T1 and defacing CT')
-    ct = nib.load(ct_fname)
-    ct_reg_affine = mne.transforms.compute_volume_registration(
-        ct, t1, pipeline='rigids')[0]
-    ct_trans = mne.transforms.Transform(fro='ras', to='ras', trans=ct_reg_affine)
-    ct_trans_fname = op.join(work_dir, 'anat', 'ct_mr-trans.fif')
-    if op.isfile(ct_trans_fname):
-        os.remove(ct_trans_fname)
-    ct_trans.save(ct_trans_fname)
-
-    landmarks_ct = mne.transforms.apply_trans(ct_reg_affine, landmarks)
-    ct_defaced = deface(ct, landmarks_ct, inset=INSET, theta=THETA)
-    nib.save(ct_defaced, op.join(anat_dir, f'sub-{sub}_ct.nii.gz'))
-
-    renderer = mne.viz.create_3d_figure((600, 600), scene=False, show=True)
-    verts, tris = mne.surface._marching_cubes(
-        np.logical_and(50 < np.array(ct_defaced.dataobj),
-                       np.array(ct_defaced.dataobj) < 500), [1])[0]
-    verts = mne.transforms.apply_trans(ct_defaced.affine, verts)
-    renderer.mesh(*verts.T, tris, 'gray')
-    renderer.screenshot(filename=op.join(work_dir, 'figures', 'CT_deface.png'))
-
-    ct_acpc = mne.transforms.apply_volume_registration(
-        ct_defaced, brain_template, ct_reg_affine.dot(np.linalg.inv(reg_affine)))
-
-    nib.save(ct_acpc, op.join(work_dir, 'anat', 'CT.mgz'))
-    if ct_json_fname:
-        copyfile(ct_json_fname, op.join(anat_dir, f'sub-{sub}_ct.json'))
 
     print(
         "Running Freesurfer recon-all, do not put the computer to sleep until "
@@ -295,6 +252,54 @@ def import_images(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     # make head surfaces
     pool = Pool(processes=1)
     pool.apply_async(make_head_surface, [sub, subjects_dir, t2_acpc_fname])
+
+
+def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
+    nii_files = print_imported_nii()
+    ct_fname, ct_json_fname = choose_file('CT', nii_files)
+
+    if not op.isfile(op.join(work_dir, 'anat', 'T1.mgz')):
+        raise RuntimeError('Import MR must be done first')
+
+    t1 = nib.load(op.join(work_dir, 'anat', 'T1.mgz'))
+
+    # rough CT alignment for defacing
+    print('Pre-registering CT to T1 and defacing CT')
+    ct = nib.load(ct_fname)
+    ct_reg_affine = mne.transforms.compute_volume_registration(
+        ct, t1, pipeline='rigids')[0]
+    ct_trans = mne.transforms.Transform(fro='ras', to='ras', trans=ct_reg_affine)
+    ct_trans_fname = op.join(work_dir, 'anat', 'CT_MR-trans.fif')
+    if op.isfile(ct_trans_fname):
+        os.remove(ct_trans_fname)
+    ct_trans.save(ct_trans_fname)
+
+    anat_dir = op.join(root, f'sub-{sub}', 'anat')
+
+    landmarks = mne._freesurfer.get_mni_fiducials(TEMPLATE, fs_subjects_dir)
+    landmarks = np.asarray([landmark['r'] for landmark in landmarks])  # in surface RAS
+    landmarks = mne.transforms.apply_trans(  # surface RAS to voxels
+        np.linalg.inv(t1.header.get_vox2ras_tkr()), landmarks * 1000)
+    landmarks = mne.transforms.apply_trans(t1.affine, landmarks)  # RAS
+    # transform to individual CT space
+    landmarks = mne.transforms.apply_trans(ct_reg_affine, landmarks)
+    ct_defaced = deface(ct, landmarks, inset=INSET, theta=THETA)
+    nib.save(ct_defaced, op.join(anat_dir, f'sub-{sub}_ct.nii.gz'))
+
+    renderer = mne.viz.create_3d_figure((600, 600), scene=False, show=True)
+    verts, tris = mne.surface._marching_cubes(
+        np.logical_and(50 < np.array(ct_defaced.dataobj),
+                       np.array(ct_defaced.dataobj) < 500), [1])[0]
+    verts = mne.transforms.apply_trans(ct_defaced.affine, verts)
+    renderer.mesh(*verts.T, tris, 'gray')
+    renderer.screenshot(filename=op.join(work_dir, 'figures', 'CT_deface.png'))
+
+    ct_acpc = mne.transforms.apply_volume_registration(
+        ct_defaced, t1, ct_reg_affine)
+
+    nib.save(ct_acpc, op.join(work_dir, 'anat', 'CT.mgz'))
+    if ct_json_fname:
+        copyfile(ct_json_fname, op.join(anat_dir, f'sub-{sub}_ct.json'))
 
 
 def make_head_surface(sub, subjects_dir, t2_acpc_fname):
@@ -333,16 +338,18 @@ def _ensure_recon(sub, ftype, subjects_dir):
         print(".", end="", flush=True)
 
 
-def align_CT(sub, subjects_dir, work_dir):
-    _ensure_recon(sub, 'T1', subjects_dir)
-    t1_fname = op.join(subjects_dir, f'sub-{sub}', 'mri', 'T1.mgz')
+def align_CT(sub, work_dir, subjects_dir):
+    ct_fname = op.join(work_dir, 'anat', 'CT.mgz')
+    if not op.isfile(ct_fname):
+        raise RuntimeError('Import CT must be done first')
+    ct = nib.load(ct_fname)
+    t1_fname = op.join(work_dir, 'anat', 'T1.mgz')
     t1 = nib.load(t1_fname)
     ct_orig = nib.load(op.join(root, f'sub-{sub}', 'anat', f'sub-{sub}_ct.nii.gz'))
-    ct_fname = op.join(work_dir, 'anat', 'CT.mgz')
-    ct = nib.load(ct_fname)
+
     # manual pre-align
     print(
-        "Check pre-alignment, think you can do better? perform a manual alignment "
+        "Check alignment, think you can do better? perform a manual alignment "
         "with Tools>>Transform Volume.. Save Volume As.. anywhere when finished"
     )
     run(
@@ -352,41 +359,43 @@ def align_CT(sub, subjects_dir, work_dir):
     )
     ct_manual_fname = None
     while ct_manual_fname is None:
-        ct_manual_fname = input("CT manual alignment path? [skip]\t").strip()
+        ct_manual_fname = input("CT manual alignment path? [enter to skip]\t").strip()
         if ct_manual_fname == '':
             break
         elif not op.isfile(ct_manual_fname):
             print('File not found')
             ct_manual_fname = None
     # save as backup after manual input
-    if ct_manual_fname != '':
-        if ct_manual_fname != ct_fname.replace(".mgz", "_manual.mgz"):
-            copyfile(ct_manual_fname, ct_fname.replace(".mgz", "_manual.mgz"))
-            copyfile(ct_manual_fname + ".lta", ct_fname.replace(".mgz", "_manual.mgz.lta"))
-        manual_reg_affine_vox = mne.read_lta(ct_fname.replace(".mgz", "_manual.mgz.lta"))
-        # convert from vox->vox to ras->ras
-        manual_reg_affine = (
-            ct.affine
-            @ np.linalg.inv(manual_reg_affine_vox)
-            @ np.linalg.inv(ct.affine)
-        )
-        orig_reg_affine = mne.read_trans(op.join(work_dir, 'anat', 'ct_mr-trans.fif'))
-        ct_aligned_fix_img, reg_affine_fix = affine_registration(
-            moving=np.array(ct_orig.dataobj),
-            static=np.array(t1.dataobj),
-            moving_affine=ct_orig.affine,
-            static_affine=t1.affine,
-            pipeline=["rigid"],
-            starting_affine=manual_reg_affine.dot(orig_reg_affine),
-            level_iters=[100],
-            sigmas=[0],
-            factors=[1],
-        )
-        nib.save(nib.MGHImage(ct_aligned_fix_img.astype(np.float32), t1.affine), ct_fname)
-        print("Check the final alignment, if it fails, try restarting or ask for help")
-        run(
-            "freeview {} {}:colormap=heat:opacity=0.6".format(t1_fname, ct_fname).split(" ")
-        )
+    if ct_manual_fname == '':
+        return
+
+    if ct_manual_fname != ct_fname.replace(".mgz", "_manual.mgz"):
+        copyfile(ct_manual_fname, ct_fname.replace(".mgz", "_manual.mgz"))
+        copyfile(ct_manual_fname + ".lta", ct_fname.replace(".mgz", "_manual.mgz.lta"))
+    manual_reg_affine_vox = mne.read_lta(ct_fname.replace(".mgz", "_manual.mgz.lta"))
+    # convert from vox->vox to ras->ras
+    manual_reg_affine = (
+        ct.affine
+        @ np.linalg.inv(manual_reg_affine_vox)
+        @ np.linalg.inv(ct.affine)
+    )
+    orig_reg_affine = mne.read_trans(op.join(work_dir, 'anat', 'ct_mr-trans.fif'))
+    ct_aligned_fix_img, reg_affine_fix = affine_registration(
+        moving=np.array(ct_orig.dataobj),
+        static=np.array(t1.dataobj),
+        moving_affine=ct_orig.affine,
+        static_affine=t1.affine,
+        pipeline=["rigid"],
+        starting_affine=manual_reg_affine.dot(orig_reg_affine),
+        level_iters=[100],
+        sigmas=[0],
+        factors=[1],
+    )
+    nib.save(nib.MGHImage(ct_aligned_fix_img.astype(np.float32), t1.affine), ct_fname)
+    print("Check the final alignment, if it fails, try restarting or ask for help")
+    run(
+        "freeview {} {}:colormap=heat:opacity=0.6".format(t1_fname, ct_fname).split(" ")
+    )
 
 
 # modified from mne-bids
@@ -413,9 +422,16 @@ def electrodes_tsv(info):
 
 
 def find_contacts(sub, root, work_dir, subjects_dir):
+    if not op.isfile(op.join(work_dir, "anat", "CT.mgz")):
+        raise RuntimeError('CT Align must be done first')
     mne.viz.set_3d_backend("pyvistaqt")
     ct = nib.load(op.join(work_dir, "anat", "CT.mgz"))
-    raw_fname = input("Intracranial recording file path?\t").strip()
+    raw_fnames = [f for f in os.listdir(op.join(root, f'sub-{sub}', 'ieeg'))
+                  if f.endswith('edf') or f.endswith('vmrk')]
+    if raw_fnames:
+        raw_fname = raw_fnames[0]
+    else:
+        raw_fname = input("Intracranial recording file path?\t").strip()
     info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
     _ensure_recon(sub, "trans")
     trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
@@ -438,19 +454,26 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     df = electrodes_tsv(raw.info)
     df.to_csv(coordsys_fname, sep='\t', index=False)
     if not op.isfile(op.splitext(coordsys_fname)[0] + '.json'):
-        t1_fname = op.join(subjects_dir, f'sub-{sub}', 'mri', 'T1.mgz')
+        t1_fname = op.relpath(op.join(subjects_dir, f'sub-{sub}', 'mri', 'T1.mgz'),
+                              root)
         with open(op.splitext(coordsys_fname)[0] + '.json', 'w') as fid:
             fid.write(json.dumps(dict(ACPC_COORDSYS, IntendedFor=t1_fname), indent=4))
 
 
 def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
+    info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
+    if not op.isfile(info_fname):
+        raise RuntimeError('Find Contacts must be done first')
+
     raw_fnames = [f for f in os.listdir(op.join(root, f'sub-{sub}', 'ieeg'))
-                  if f.endswith('edf')]
+                  if f.endswith('edf') or f.endswith('vmrk')]
     if raw_fnames:
         raw_fname = raw_fnames[0]
     else:
         raw_fname = input("Intracranial recording file path?\t").strip()
     raw = mne.io.read_raw(raw_fname)
+
+    info = mne.io.read_info(info_fname)
     template_info_fname = op.join(work_dir, "ieeg", f"{TEMPLATE}_ch_pos.fif")
     if op.isfile(template_info_fname):
         print("Warning already exists, overwriting")
@@ -464,7 +487,7 @@ def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     reg_affine, sdr_morph = mne.transforms.compute_volume_registration(
         subject_brain, template_brain, verbose=True
     )
-    ch_pos = {ch["ch_name"]: ch["loc"][:3] for ch in raw.info["chs"]}
+    ch_pos = {ch["ch_name"]: ch["loc"][:3] for ch in info["chs"]}
     montage = mne.channels.make_dig_montage(ch_pos, coord_frame="head")
     # montage = raw.get_montage()
     montage.apply_trans(trans)
@@ -475,7 +498,7 @@ def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     elec_image = mne.preprocessing.ieeg.make_montage_volume(montage, CT_aligned)
     # now go back to "head" coordinates to save to raw
     montage_warped.apply_trans(mne.transforms.invert_transform(template_trans))
-    raw.set_montage(montage_warped, on_missing="warn")
+    raw.set_montage(montage_warped, on_missing='warn')
     mne.io.write_info(template_info_fname, raw.info)
     nib.save(elec_image, op.join(work_dir, "ieeg", "elec_image.mgz"))
     coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
@@ -811,11 +834,15 @@ if __name__ == "__main__":
     work_dir = op.join(subjects_dir, "ieeg-preprocessing", f"sub-{sub}")
     for dtype in ('anat', 'ieeg', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
-    # print_status(sub, task, subjects_dir, work_dir)
+    print_status(sub, task, subjects_dir, work_dir)
     do_step("Find events", find_events, sub, task, root)
-    do_step('Import images', import_images, sub, root, work_dir,
+    do_step('Convert DICOMs', import_dicom, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
-    do_step("Align CT", align_CT, sub, subjects_dir)
+    do_step('Import MR', import_mr, sub, root, work_dir,
+            subjects_dir, fs_subjects_dir)
+    do_step('Import CT', import_ct, sub, root, work_dir,
+            subjects_dir, fs_subjects_dir)
+    do_step("Align CT", align_CT, sub, work_dir, subjects_dir)
     do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
     do_step("Warp to template", warp_to_template, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
