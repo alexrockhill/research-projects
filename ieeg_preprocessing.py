@@ -525,32 +525,41 @@ def find_contacts(sub, root, work_dir, subjects_dir):
         raw_fname = raw_fnames[0]
     else:
         raw_fname = input("Intracranial recording file path?\t").strip()
-    info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
+    electrodes_fname = op.join(root, f'sub-{sub}', 'ieeg',
+                               f'sub-{sub}_space-ACPC_electrodes.tsv')
     _ensure_recon(f'sub-{sub}', "T1", subjects_dir)
     _ensure_recon(f'sub-{sub}', "trans", subjects_dir)
     trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     raw = mne.io.read_raw(raw_fname)
     raw = normalize_channel_names(raw)
-    if op.isfile(info_fname):
-        info = mne.io.read_info(info_fname)
-        raw.set_montage(
-            mne.channels.make_dig_montage(
-                {ch["ch_name"]: ch["loc"][:3] for ch in info["chs"]}, coord_frame="head"
-            )
+    if op.isfile(electrodes_fname):
+        df = read_csv(electrodes_fname, sep='\t')
+        montage = mne.channels.make_dig_montage(
+            {name: [x, y, z] for name, x, y, z in zip(df.name, df.x, df.y, df.z)},
+            coord_frame="ras"
         )
+        mne_bids.convert_montage_to_mri(
+            montage, subject=f'sub-{sub}', subjects_dir=subjects_dir)
+        montage.apply_trans(mne.transforms.invert_transform(trans))
+        raw.set_montage(montage)
     mne_gui.locate_ieeg(raw.info, trans, ct, subject=f"sub-{sub}",
                         subjects_dir=subjects_dir)
-    while input('Press "s" to save when finished\t').lower() != "s":
-        pass
-    mne.io.write_info(info_fname, raw.info)
-    coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
-                             f'sub-{sub}_space-ACPC_coordsystem.tsv')
+    answer = None
+    while answer != 'q':
+        answer = input('Press "s" to save and "q" to quit\t').lower()
+        if answer == "s":
+            df = electrodes_tsv(raw.info)
+            df.to_csv(electrodes_fname, sep='\t', index=False)
+
+    # final save
     df = electrodes_tsv(raw.info)
-    df.to_csv(coordsys_fname, sep='\t', index=False)
-    if not op.isfile(op.splitext(coordsys_fname)[0] + '.json'):
+    df.to_csv(electrodes_fname, sep='\t', index=False)
+    coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
+                             f'sub-{sub}_space-ACPC_coordsystem.json')
+    if not op.isfile(coordsys_fname):
         t1_fname = op.relpath(op.join(subjects_dir, f'sub-{sub}', 'mri', 'T1.mgz'),
                               root)
-        with open(op.splitext(coordsys_fname)[0] + '.json', 'w') as fid:
+        with open(coordsys_fname, 'w') as fid:
             fid.write(json.dumps(dict(ACPC_COORDSYS, IntendedFor=t1_fname), indent=4))
 
 
