@@ -970,20 +970,17 @@ if __name__ == "__main__":
     do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
     do_step("Warp to template", warp_to_template, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
-    fencepost = True
+    one_finished = True
     while PROCS:
         for name, proc in PROCS.copy().items():
-            if hasattr(proc, 'ready'):
-                if proc.ready():
-                    PROCS.pop(name)
-            else:
-                if proc.poll() is not None:
-                    PROCS.pop(name)
+            if (hasattr(proc, 'ready') and proc.ready()) or proc.poll() is not None:
+                PROCS.pop(name)
+                one_finished = True
         if PROCS:
-            if fencepost:
+            if one_finished:
                 print(f'Waiting for {", ".join(PROCS.keys())} to finish, please '
                       'don\'t close the console')
-                fencepost = False
+                one_finished = False
             else:
                 print('.', end='', flush=True)
             time.sleep(60)
