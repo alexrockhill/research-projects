@@ -5,16 +5,15 @@ import mne
 import mne_bids
 import matplotlib.pyplot as plt
 
-sub = '97'
-task = 'food'
+sub = '72'
+task = 'numbers'
 aseg = 'wmparc'  # use for automatic freesurfer labels
 template = 'MNI152NLin2009cAsym'
 
-bids_root = '.'
+bids_root = '../numbers_BIDS'
 
 # get plotting information
 subjects_dir = op.join(bids_root, "derivatives", "freesurfer")
-trans = mne.coreg.estimate_head_mri_t(f'sub-{sub}', subjects_dir)
 brain_kwargs = dict(
     cortex="low_contrast",
     alpha=0.2,
@@ -25,9 +24,6 @@ brain_kwargs = dict(
 lut, colors = mne._freesurfer.read_freesurfer_lut()
 lut_r = {v: k for k, v in lut.items()}
 cmap = plt.get_cmap("viridis")
-template_trans = mne.coreg.estimate_head_mri_t(
-    template, op.join(os.environ["FREESURFER_HOME"], "subjects")
-)
 
 path = mne_bids.BIDSPath(subject=sub, root=bids_root, run='1', task=task)
 raw = mne_bids.read_raw_bids(path)

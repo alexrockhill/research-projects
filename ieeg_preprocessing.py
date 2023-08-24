@@ -959,7 +959,7 @@ if __name__ == "__main__":
         if '\n*_ct.json\n*_ct.nii.gz' not in fid.read():
             fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
-    do_step("Find events", find_events, sub, root)
+    do_step("Import ieeg data", find_events, sub, root)
     do_step('Convert DICOMs', import_dicom, sub, work_dir)
     do_step('Import MR', import_mr, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
