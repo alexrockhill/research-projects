@@ -949,13 +949,14 @@ if __name__ == "__main__":
             )
             PROCS['template-recon-all'] = proc
     root = input('BIDS directory?\t')
+    bids_name = op.basename(root)
     sub = input("Subject ID number?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
-    work_dir = op.join(root, "derivatives", "ieeg-preprocessing", f"sub-{sub}")
-    for dtype in ('anat', 'ieeg', 'figures', 'tmp'):
+    work_dir = op.join(root, '..', f"{bids_name}-ieeg-preprocessing", f"sub-{sub}")
+    for dtype in ('anat', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
     with open(op.join(root, '.bidsignore'), 'r+') as fid:
-        if '*_ct.json\n*_ct.nii.gz' not in fid.read():
+        if '\n*_ct.json\n*_ct.nii.gz' not in fid.read():
             fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
     do_step("Find events", find_events, sub, root)
