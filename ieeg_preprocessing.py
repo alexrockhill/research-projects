@@ -955,7 +955,7 @@ if __name__ == "__main__":
     work_dir = op.join(root, '..', f"{bids_name}-ieeg-preprocessing", f"sub-{sub}")
     for dtype in ('anat', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
-    with open(op.join(root, '.bidsignore'), 'r+') as fid:
+    with open(op.join(root, '.bidsignore'), 'a+') as fid:
         if '\n*_ct.json\n*_ct.nii.gz' not in fid.read():
             fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
