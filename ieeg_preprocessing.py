@@ -491,26 +491,36 @@ def align_CT(sub, work_dir, subjects_dir):
 
 
 # modified from mne-bids
-def electrodes_tsv(info):
+def electrodes_tsv(montage):
+    pos = montage.get_positions()
+    assert pos['coord_frame'] == 'ras'
     x, y, z, names = list(), list(), list(), list()
-    for ch in info["chs"]:
-        if ch["kind"] in (mne.constants.FIFF.FIFFV_STIM_CH,
-                          mne.constants.FIFF.FIFFV_MISC_CH):
-            print(f"Not writing stim chan {ch['ch_name']} to electrodes.tsv")
-            continue
-        elif np.isnan(ch["loc"][:3]).any() or np.allclose(ch["loc"][:3], 0):
+    for ch in pos['ch_pos']:
+        loc = pos['ch_pos'][ch]
+        if np.isnan(loc).any():
             x.append("n/a")
             y.append("n/a")
             z.append("n/a")
         else:
-            x.append(ch["loc"][0])
-            y.append(ch["loc"][1])
-            z.append(ch["loc"][2])
-        names.append(ch["ch_name"])
+            x.append(loc[0])
+            y.append(loc[1])
+            z.append(loc[2])
+        names.append(ch)
 
     data = OrderedDict([("name", names), ("x", x), ("y", y), ("z", z),
                         ("size", ["n/a"] * len(names))])
     return DataFrame(data)
+
+
+def read_montage_from_electrodes_tsv(electrodes_fname, sub, subjects_dir):
+    df = read_csv(electrodes_fname, sep='\t')
+    montage = mne.channels.make_dig_montage(
+        {name: [x, y, z] for name, x, y, z in zip(df.name, df.x, df.y, df.z)},
+        coord_frame="ras"
+    )
+    mne_bids.convert_montage_to_mri(
+        montage, subject=sub, subjects_dir=subjects_dir)
+    return montage
 
 
 def find_contacts(sub, root, work_dir, subjects_dir):
@@ -525,21 +535,17 @@ def find_contacts(sub, root, work_dir, subjects_dir):
         raw_fname = raw_fnames[0]
     else:
         raw_fname = input("Intracranial recording file path?\t").strip()
+    trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     electrodes_fname = op.join(root, f'sub-{sub}', 'ieeg',
                                f'sub-{sub}_space-ACPC_electrodes.tsv')
     _ensure_recon(f'sub-{sub}', "T1", subjects_dir)
     _ensure_recon(f'sub-{sub}', "trans", subjects_dir)
-    trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
+
     raw = mne.io.read_raw(raw_fname)
     raw = normalize_channel_names(raw)
     if op.isfile(electrodes_fname):
-        df = read_csv(electrodes_fname, sep='\t')
-        montage = mne.channels.make_dig_montage(
-            {name: [x, y, z] for name, x, y, z in zip(df.name, df.x, df.y, df.z)},
-            coord_frame="ras"
-        )
-        mne_bids.convert_montage_to_mri(
-            montage, subject=f'sub-{sub}', subjects_dir=subjects_dir)
+        montage = read_montage_from_electrodes_tsv(
+            electrodes_fname, f'sub-{sub}', subjects_dir)
         montage.apply_trans(mne.transforms.invert_transform(trans))
         raw.set_montage(montage)
     mne_gui.locate_ieeg(raw.info, trans, ct, subject=f"sub-{sub}",
@@ -548,11 +554,19 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     while answer != 'q':
         answer = input('Press "s" to save and "q" to quit\t').lower()
         if answer == "s":
-            df = electrodes_tsv(raw.info)
+            montage = raw.get_montage()
+            montage.apply_trans(trans)
+            mne_bids.convert_montage_to_ras(
+                montage, subject=f'sub-{sub}', subjects_dir=subjects_dir)
+            df = electrodes_tsv(montage)
             df.to_csv(electrodes_fname, sep='\t', index=False)
 
     # final save
-    df = electrodes_tsv(raw.info)
+    montage = raw.get_montage()
+    montage.apply_trans(trans)
+    mne_bids.convert_montage_to_ras(
+        montage, subject=f'sub-{sub}', subjects_dir=subjects_dir)
+    df = electrodes_tsv(montage, f'sub-{sub}', subjects_dir)
     df.to_csv(electrodes_fname, sep='\t', index=False)
     coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
                              f'sub-{sub}_space-ACPC_coordsystem.json')
@@ -564,52 +578,40 @@ def find_contacts(sub, root, work_dir, subjects_dir):
 
 
 def warp_to_template(sub, root, work_dir, subjects_dir, fs_subjects_dir):
-    info_fname = op.join(work_dir, "ieeg", "ch_pos.fif")
-    if not op.isfile(info_fname):
+    electrodes_fname = op.join(root, f'sub-{sub}', 'ieeg',
+                               f'sub-{sub}_space-ACPC_electrodes.tsv')
+    electrodes_fname_template = op.join(root, f'sub-{sub}', 'ieeg',
+                                        f'sub-{sub}_space-{TEMPLATE}_coordsystem.tsv')
+    if not op.isfile(electrodes_fname):
         raise RuntimeError('Find Contacts must be done first')
 
-    raw_fnames = [f for f in os.listdir(op.join(root, f'sub-{sub}', 'ieeg'))
-                  if f.endswith('edf') or f.endswith('vmrk')]
-    if raw_fnames:
-        raw_fname = raw_fnames[0]
-    else:
-        raw_fname = input("Intracranial recording file path?\t").strip()
-    raw = mne.io.read_raw(raw_fname)
-
-    info = mne.io.read_info(info_fname)
-    template_info_fname = op.join(work_dir, "ieeg", f"{TEMPLATE}_ch_pos.fif")
-    if op.isfile(template_info_fname):
+    montage = read_montage_from_electrodes_tsv(electrodes_fname, sub, subjects_dir)
+    if op.isfile(electrodes_fname_template):
         print("Warning already exists, overwriting")
     print(f"Warping to {TEMPLATE} template brain, this will take about 15 minutes")
     # template data
     template_brain = nib.load(op.join(fs_subjects_dir, TEMPLATE, "mri", "brain.mgz"))
-    template_trans = mne.coreg.estimate_head_mri_t(TEMPLATE, fs_subjects_dir)
     # subject data
-    trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     subject_brain = nib.load(op.join(subjects_dir, f"sub-{sub}", "mri", "brain.mgz"))
     reg_affine, sdr_morph = mne.transforms.compute_volume_registration(
         subject_brain, template_brain, verbose=True
     )
-    ch_pos = {ch["ch_name"]: ch["loc"][:3] for ch in info["chs"]}
-    montage = mne.channels.make_dig_montage(ch_pos, coord_frame="head")
-    # montage = raw.get_montage()
-    montage.apply_trans(trans)
     CT_aligned = nib.load(op.join(subjects_dir, f"sub-{sub}", "CT", "CT.mgz"))
     montage_warped = mne.preprocessing.ieeg.warp_montage(
         montage, subject_brain, template_brain, reg_affine, sdr_morph
     )
+    # save elec image for sizes
     elec_image = mne.preprocessing.ieeg.make_montage_volume(montage, CT_aligned)
-    # now go back to "head" coordinates to save to raw
-    montage_warped.apply_trans(mne.transforms.invert_transform(template_trans))
-    raw.set_montage(montage_warped, on_missing='warn')
-    mne.io.write_info(template_info_fname, raw.info)
     nib.save(elec_image, op.join(work_dir, "ieeg", "elec_image.mgz"))
+    # save electrode locations
+    mne_bids.convert_montage_to_ras(
+        montage_warped, subject=TEMPLATE, subjects_dir=fs_subjects_dir)
+    df = electrodes_tsv(montage_warped)
+    df.to_csv(electrodes_fname_template, sep='\t', index=False)
     coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
-                             f'sub-{sub}_space-{TEMPLATE}_coordsystem.tsv')
-    df = electrodes_tsv(raw.info)
-    df.to_csv(coordsys_fname, sep='\t', index=False)
-    if not op.isfile(op.splitext(coordsys_fname)[0] + '.json'):
-        with open(op.splitext(coordsys_fname)[0] + '.json', 'w') as fid:
+                             f'sub-{sub}_space-{TEMPLATE}_coordsystem.json')
+    if not op.isfile(coordsys_fname):
+        with open(coordsys_fname, 'w') as fid:
             fid.write(json.dumps(TEMPLATE_COORDSYS, indent=4))
 
 
@@ -713,7 +715,8 @@ def _fix_pd2(raw, width=20):
 def normalize_channel_names(raw):
     raw.rename_channels(
         {
-            ch: ch.replace("-20000", "").replace("-2000", "").replace("-200", "")
+            ch: ch.replace("-20000", "").replace("-2000", "").replace(
+                "-200", "").replace('-Ref1', '')
             for ch in raw.ch_names
         }
     )
@@ -727,7 +730,7 @@ def normalize_channel_names(raw):
 # modified from mne-bids
 def events_tsv(raw):
     annot = raw.annotations
-    events, event_id = mne.event_from_annotations(raw)
+    events, event_id = mne.events_from_annotations(raw)
 
     # Onset column needs to be specified in seconds
     data = OrderedDict(
@@ -744,14 +747,14 @@ def events_tsv(raw):
 
 def find_events(sub, task, root):
     raw_fname = input("Intracranial recording file path?\t").strip()
+    task = input("Task?\t").strip()
     beh_fname = input("Behavior tsv file path?\t").strip()
     run = input('Run?\t')
-    raw = mne.io.read_raw(raw_fname, preload=True)
+    raw = mne.io.read_raw(raw_fname)
     check = input("Preprocess to fix noise? (Y/n/2)\t").lower()
-    if check == "y":
-        pd_ch_names = _fix_pd(raw)
-    elif check == "2":
-        pd_ch_names = _fix_pd2(raw)
+    if check in ("y", "2"):
+        raw.load_data()
+        pd_ch_names = _fix_pd(raw) if check == "y" else _fix_pd2(raw)
     else:
         pd_ch_names = None
     if task == "mirror":
@@ -874,10 +877,12 @@ def find_events(sub, task, root):
     else:
         df = None
     bids_path = mne_bids.BIDSPath(subject=str(sub), task=task, run=run, root=root)
+    raw = mne.io.read_raw(raw_fname)
     raw = normalize_channel_names(raw)
     print('Please mark bad channels by clicking on them')
-    raw.compute_psd().plot(show=False)
-    raw.plot()
+    fig = raw.compute_psd().plot(show=False)
+    fig.show()
+    raw.plot(block=True)
     mne_bids.write_raw_bids(raw, bids_path, anonymize=dict(daysback=40000),
                             overwrite=True)
     raw_json_fname = op.join(root, f'sub-{sub}', 'ieeg',
@@ -889,6 +894,8 @@ def find_events(sub, task, root):
     data['Manufacturer'] = 'Cadwell' if manufacturer == '' else manufacturer
     powerline = input('Powerline frequency (60 US, 50 EU)? [60]\t')
     data['PowerLineFrequency'] = 60 if powerline == '' else powerline
+    ref = input('Reference? [n/a]\t')
+    data['iEEGReference'] = 'n/a' if ref == '' else ref
     with open(raw_json_fname, 'w') as fid:
         fid.write(json.dumps(data, indent=4))
     # save behavior
@@ -898,11 +905,11 @@ def find_events(sub, task, root):
         df.to_csv(op.join(beh_dir, f"sub-{sub}_task-{task}_run-{run}_beh.tsv"),
                   sep="\t", index=False)
         raw.set_annotations(annot)
-    # save events
-    events_df = events_tsv(raw)
-    events_df.to_csv(op.join(root, f'sub-{sub}', 'ieeg',
-                             f'sub-{sub}_task-{task}_run-{run}_events.tsv'),
-                     sep='\t', index=False)
+        # save events
+        events_df = events_tsv(raw)
+        events_df.to_csv(op.join(root, f'sub-{sub}', 'ieeg',
+                                 f'sub-{sub}_task-{task}_run-{run}_events.tsv'),
+                         sep='\t', index=False)
 
 
 if __name__ == "__main__":
@@ -935,13 +942,16 @@ if __name__ == "__main__":
             )
     root = input('BIDS directory?\t')
     sub = input("Subject ID number?\t")
-    task = input("Task?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
     work_dir = op.join(root, "derivatives", "ieeg-preprocessing", f"sub-{sub}")
     for dtype in ('anat', 'ieeg', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
+    if not op.isfile(op.join(root, '.bidsignore')):
+        with open(op.join(root, '.bidsignore'), 'r+') as fid:
+            if '*_ct.json\n*_ct.nii.gz' not in fid.read():
+                fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
-    do_step("Find events", find_events, sub, task, root)
+    do_step("Find events", find_events, sub, root)
     do_step('Convert DICOMs', import_dicom, sub, work_dir)
     do_step('Import MR', import_mr, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
