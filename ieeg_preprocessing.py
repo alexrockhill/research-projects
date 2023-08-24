@@ -44,6 +44,8 @@ TEMPLATE_COORDSYS = {
     "iEEGCoordinateUnits": "m",
 }
 
+PROCS = dict()
+
 
 def print_status(sub, root, work_dir):
     ieeg_dir = op.join(root, f'sub-{sub}', 'ieeg')
@@ -269,11 +271,14 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
         cmd += f"-T2 {t2_acpc_fname} "
     cmd += "-all -cw256"
     with open(op.join(tmp_dir, f"sub-{sub}_recon_output.txt"), "w") as fid:
-        Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
+        proc = Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
+        PROCS['recon-all'] = proc
 
     # make head surfaces
     pool = Pool(processes=1)
-    pool.apply_async(make_head_surface, [sub, work_dir, subjects_dir, t2_acpc_fname])
+    proc = pool.apply_async(
+        make_head_surface, [sub, work_dir, subjects_dir, t2_acpc_fname])
+    PROCS['make-head-surface'] = proc
 
 
 def import_dwi(sub, root, work_dir, subjects_dir):
@@ -313,13 +318,15 @@ def import_dwi(sub, root, work_dir, subjects_dir):
     -vv"
     with open(op.join(tmp_dir, f"sub-{sub}_qsiprep_output.txt"), "w") as fid:
         proc = Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
+        PROCS['qsiprep'] = proc
     # pyafq
     pool = Pool(processes=1)
-    pool.apply_async(run_qsi_prep, [proc, op.join(derivatives_dir, 'qsiprep'),
-                                    work_dir, subjects_dir])
+    proc = pool.apply_async(run_pyafq, [proc, op.join(derivatives_dir, 'qsiprep'),
+                                        work_dir, subjects_dir])
+    PROCS['pyafq'] = proc
 
 
-def run_qsi_prep(proc, qsiprep_root, work_dir, subjects_dir):
+def run_pyafq(proc, qsiprep_root, work_dir, subjects_dir):
     tmp_dir = op.join(work_dir, 'tmp')
     with open(op.join(tmp_dir, f"sub-{sub}_pyafq_output.txt"), "w") as fid:
         with redirect_stdout(fid):
@@ -566,7 +573,7 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     montage.apply_trans(trans)
     mne_bids.convert_montage_to_ras(
         montage, subject=f'sub-{sub}', subjects_dir=subjects_dir)
-    df = electrodes_tsv(montage, f'sub-{sub}', subjects_dir)
+    df = electrodes_tsv(montage)
     df.to_csv(electrodes_fname, sep='\t', index=False)
     coordsys_fname = op.join(root, f'sub-{sub}', 'ieeg',
                              f'sub-{sub}_space-ACPC_coordsystem.json')
@@ -934,22 +941,22 @@ if __name__ == "__main__":
             cmd += f"-T2 {template_t1_input_fname} "
         cmd += "-all -cw256"
         with open(f"{TEMPLATE}_recon_output.txt", "w") as fid:
-            Popen(
+            proc = Popen(
                 cmd.split(" "),
                 stdout=fid,
                 stderr=fid,
                 env=os.environ,
             )
+            PROCS['template-recon-all'] = proc
     root = input('BIDS directory?\t')
     sub = input("Subject ID number?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
     work_dir = op.join(root, "derivatives", "ieeg-preprocessing", f"sub-{sub}")
     for dtype in ('anat', 'ieeg', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
-    if not op.isfile(op.join(root, '.bidsignore')):
-        with open(op.join(root, '.bidsignore'), 'r+') as fid:
-            if '*_ct.json\n*_ct.nii.gz' not in fid.read():
-                fid.write('*_ct.json\n*_ct.nii.gz')
+    with open(op.join(root, '.bidsignore'), 'r+') as fid:
+        if '*_ct.json\n*_ct.nii.gz' not in fid.read():
+            fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
     do_step("Find events", find_events, sub, root)
     do_step('Convert DICOMs', import_dicom, sub, work_dir)
@@ -962,3 +969,20 @@ if __name__ == "__main__":
     do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
     do_step("Warp to template", warp_to_template, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
+    fencepost = True
+    while PROCS:
+        for name, proc in PROCS.copy().items():
+            if hasattr(proc, 'ready'):
+                if proc.ready():
+                    PROCS.pop(name)
+            else:
+                if proc.poll() is not None:
+                    PROCS.pop(name)
+        if PROCS:
+            if fencepost:
+                print(f'Waiting for {", ".join(PROCS.keys())} to finish, please '
+                      'don\'t close the console')
+                fencepost = False
+            else:
+                print('.', end='', flush=True)
+            time.sleep(60)
