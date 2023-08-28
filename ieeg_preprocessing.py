@@ -5,11 +5,12 @@
 
 import os
 import os.path as op
+import tempfile
 import json
 import numpy as np
 from collections import OrderedDict
 import time
-from shutil import which, copyfile
+from shutil import which, copyfile, rmtree
 from contextlib import redirect_stdout
 from subprocess import run, Popen, PIPE
 from multiprocessing import Pool
@@ -136,14 +137,12 @@ def deface(image, landmarks, inset=5, theta=15.0):
     return image
 
 
-def import_dicom(sub, work_dir):
-    tmp_dir = op.join(work_dir, "tmp")
+def import_dicom(tmp_dir):
     fpath = input('DICOM folder (searches all subfolders)?\t').strip()
     run(f"dcm2niix -o {tmp_dir} -z y {fpath}", shell=True)
 
 
-def print_imported_nii():
-    tmp_dir = op.join(work_dir, "tmp")
+def print_imported_nii(tmp_dir):
     nii_files = [op.join(tmp_dir, f) for f in os.listdir(tmp_dir)
                  if f.endswith('nii.gz')]
     print('\n' * 2)
@@ -182,9 +181,9 @@ def choose_file(ftype, nii_files):
     return nii_files[idx], nii_files[idx].replace('nii.gz', 'json')
 
 
-def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
-    tmp_dir = op.join(work_dir, "tmp")
-    nii_files = print_imported_nii()
+def import_mr(sub, root, tmp_dir, work_dir, subjects_dir, fs_subjects_dir):
+    out_dir = op.join(work_dir, 'tmp')
+    nii_files = print_imported_nii(tmp_dir)
     t1_fname, t1_json_fname = choose_file('T1', nii_files)
     t2_fname, t2_json_fname = choose_file('T2', nii_files)
 
@@ -260,7 +259,7 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
         "Running Freesurfer recon-all, do not put the computer to sleep until "
         "it finishes. This may take as long as 12 hours. You can "
         "move on to the next step in the meantime. The progress will be "
-        f"output to {tmp_dir}/sub-{sub}_recon_output.txt"
+        f"output to {out_dir}/sub-{sub}_recon_output.txt"
     )
     # run recon-all
     os.environ["SUBJECTS"] = f"sub-{sub}"
@@ -270,7 +269,7 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     if op.isfile(t2_acpc_fname):
         cmd += f"-T2 {t2_acpc_fname} "
     cmd += "-all -cw256"
-    with open(op.join(tmp_dir, f"sub-{sub}_recon_output.txt"), "w") as fid:
+    with open(op.join(out_dir, f"sub-{sub}_recon_output.txt"), "w") as fid:
         proc = Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
         PROCS['recon-all'] = proc
 
@@ -281,12 +280,12 @@ def import_mr(sub, root, work_dir, subjects_dir, fs_subjects_dir):
     PROCS['make-head-surface'] = proc
 
 
-def import_dwi(sub, root, work_dir, subjects_dir):
+def import_dwi(sub, root, tmp_dir, work_dir, subjects_dir):
+    out_dir = op.join(work_dir, 'tmp')
     my_run = 1
     check = True
-    tmp_dir = op.join(work_dir, "tmp")
     while check:
-        nii_files = print_imported_nii()
+        nii_files = print_imported_nii(tmp_dir)
         dwi_fname, dwi_json_fname = choose_file('DWI', nii_files)
         dwi_dir = op.join(root, f'sub-{sub}', 'dwi')
         os.makedirs(dwi_dir, exist_ok=True)
@@ -316,7 +315,7 @@ def import_dwi(sub, root, work_dir, subjects_dir):
     --output-resolution 1.25 \
     --write-graph \
     -vv"
-    with open(op.join(tmp_dir, f"sub-{sub}_qsiprep_output.txt"), "w") as fid:
+    with open(op.join(out_dir, f"sub-{sub}_qsiprep_output.txt"), "w") as fid:
         proc = Popen(cmd.split(" "), stdout=fid, stderr=fid, env=os.environ)
         PROCS['qsiprep'] = proc
     # pyafq
@@ -327,8 +326,8 @@ def import_dwi(sub, root, work_dir, subjects_dir):
 
 
 def run_pyafq(proc, qsiprep_root, work_dir, subjects_dir):
-    tmp_dir = op.join(work_dir, 'tmp')
-    with open(op.join(tmp_dir, f"sub-{sub}_pyafq_output.txt"), "w") as fid:
+    out_dir = op.join(work_dir, 'tmp')
+    with open(op.join(out_dir, f"sub-{sub}_pyafq_output.txt"), "w") as fid:
         with redirect_stdout(fid):
             poll = None
             print('Waiting for qsiprep to finish')
@@ -341,8 +340,8 @@ def run_pyafq(proc, qsiprep_root, work_dir, subjects_dir):
             myafq.export_all()
 
 
-def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
-    nii_files = print_imported_nii()
+def import_ct(sub, root, tmp_dir, work_dir, subjects_dir, fs_subjects_dir):
+    nii_files = print_imported_nii(tmp_dir)
     ct_fname, ct_json_fname = choose_file('CT', nii_files)
 
     if not op.isfile(op.join(work_dir, 'anat', 'T1.mgz')):
@@ -398,8 +397,8 @@ def import_ct(sub, root, work_dir, subjects_dir, fs_subjects_dir):
 
 
 def make_head_surface(sub, work_dir, subjects_dir, t2_acpc_fname):
-    tmp_dir = op.join(work_dir, 'tmp')
-    with open(op.join(tmp_dir, f"sub-{sub}_head_surf_output.txt"), "w") as fid:
+    out_dir = op.join(work_dir, 'tmp')
+    with open(op.join(out_dir, f"sub-{sub}_head_surf_output.txt"), "w") as fid:
         with redirect_stdout(fid):
             _ensure_recon(f'sub-{sub}', 'T1', subjects_dir)
             mne.bem.make_scalp_surfaces(
@@ -952,7 +951,10 @@ if __name__ == "__main__":
     bids_name = op.basename(root)
     sub = input("Subject ID number?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
-    work_dir = op.join(root, '..', f"{bids_name}-ieeg-preprocessing", f"sub-{sub}")
+    work_dir = op.join(root, f"{bids_name}-ieeg-preprocessing", f"sub-{sub}")
+    tmp_dir_root = tempfile.mkdtemp()
+    tmp_dir = op.join(tmp_dir_root, f'sub-{sub}')
+    os.makedirs(tmp_dir, exist_ok=True)
     for dtype in ('anat', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
     with open(op.join(root, '.bidsignore'), 'a+') as fid:
@@ -960,11 +962,11 @@ if __name__ == "__main__":
             fid.write('*_ct.json\n*_ct.nii.gz')
     print_status(sub, root, work_dir)
     do_step("Import ieeg data", find_events, sub, root)
-    do_step('Convert DICOMs', import_dicom, sub, work_dir)
-    do_step('Import MR', import_mr, sub, root, work_dir,
+    do_step('Convert DICOMs', import_dicom, tmp_dir)
+    do_step('Import MR', import_mr, sub, root, tmp_dir, work_dir,
             subjects_dir, fs_subjects_dir)
-    do_step('Import DWI', import_dwi, sub, root, work_dir, subjects_dir)
-    do_step('Import CT', import_ct, sub, root, work_dir,
+    do_step('Import DWI', import_dwi, sub, root, tmp_dir, work_dir, subjects_dir)
+    do_step('Import CT', import_ct, sub, root, tmp_dir, work_dir,
             subjects_dir, fs_subjects_dir)
     do_step("Align CT", align_CT, sub, work_dir, subjects_dir)
     do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
@@ -984,3 +986,4 @@ if __name__ == "__main__":
             else:
                 print('.', end='', flush=True)
             time.sleep(60)
+    rmtree(tmp_dir)
