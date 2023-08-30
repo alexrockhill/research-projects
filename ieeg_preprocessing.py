@@ -50,11 +50,10 @@ PROCS = dict()
 
 def print_status(sub, root, work_dir):
     ieeg_dir = op.join(root, f'sub-{sub}', 'ieeg')
-    if op.isfile(ieeg_dir):
-        for events_fname in [f for f in os.listdir(ieeg_dir) if
-                             f.endswith('events.tsv')]:
-            name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
-            print('Task data file complete: {}'.format(name_dict['task']))
+    for events_fname in [f for f in os.listdir(ieeg_dir) if
+                         f.endswith('events.tsv')]:
+        name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
+        print('Task data file complete: {}'.format(name_dict['task']))
     for name, fname in zip(
         [
             "Import MR",
@@ -956,6 +955,8 @@ if __name__ == "__main__":
     os.makedirs(tmp_dir, exist_ok=True)
     for dtype in ('anat', 'figures', 'tmp'):
         os.makedirs(op.join(work_dir, dtype), exist_ok=True)
+    for dtype in ('anat', 'ieeg'):
+        os.makedirs(op.join(root, f'sub-{sub}', dtype), exist_ok=True)
     with open(op.join(root, '.bidsignore'), 'a+') as fid:
         if '\n*_ct.json\n*_ct.nii.gz' not in fid.read():
             fid.write('*_ct.json\n*_ct.nii.gz')
