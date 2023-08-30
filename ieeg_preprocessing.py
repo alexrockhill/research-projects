@@ -948,10 +948,9 @@ if __name__ == "__main__":
             )
             PROCS['template-recon-all'] = proc
     root = input('BIDS directory?\t')
-    bids_name = op.basename(root)
     sub = input("Subject ID number?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
-    work_dir = op.join(root, f"{bids_name}-ieeg-preprocessing", f"sub-{sub}")
+    work_dir = op.join(root, "ieeg-preprocessing", f"sub-{sub}")
     tmp_dir_root = tempfile.mkdtemp()
     tmp_dir = op.join(tmp_dir_root, f'sub-{sub}')
     os.makedirs(tmp_dir, exist_ok=True)
