@@ -64,7 +64,7 @@ def print_status(sub, root, work_dir):
             "Warp to Template",
         ],
         [
-            op.join(work_dir, 'anat' "T1.mgz"),
+            op.join(work_dir, 'anat', "T1.mgz"),
             op.join(root, f'sub-{sub}', 'dwi', f'sub-{sub}_dwi.nii.gz'),
             op.join(work_dir, 'anat', "CT.mgz"),
             op.join(work_dir, "ieeg", "ch_pos.fif"),
