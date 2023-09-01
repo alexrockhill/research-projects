@@ -528,7 +528,7 @@ def read_montage_from_electrodes_tsv(electrodes_fname, sub, subjects_dir):
     return montage
 
 
-def find_contacts(sub, root, work_dir, subjects_dir):
+def find_contacts(sub, root, tmp_dir, work_dir, subjects_dir):
     if not op.isfile(op.join(work_dir, "anat", "CT.mgz")):
         raise RuntimeError('CT Align must be done first')
     mne.viz.set_3d_backend("pyvistaqt")
@@ -537,16 +537,19 @@ def find_contacts(sub, root, work_dir, subjects_dir):
     raw_fnames = [op.join(ieeg_dir, f) for f in os.listdir(ieeg_dir)
                   if f.endswith('edf') or f.endswith('vmrk')]
     if raw_fnames:
-        raw_fname = raw_fnames[0]
+        raw = mne.io.read_raw(raw_fnames[0])
+    elif op.isfile(op.join(tmp_dir, 'labeling_raw.edf')):
+        raw = mne.io.read_raw(op.join(tmp_dir, 'labeling_raw.edf'))
     else:
         raw_fname = input("Intracranial recording file path?\t").strip()
+        raw = mne.io.read_raw(raw_fname)
+        raw.export(op.join(tmp_dir, 'labeling_raw.edf'))
     trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     electrodes_fname = op.join(root, f'sub-{sub}', 'ieeg',
                                f'sub-{sub}_space-ACPC_electrodes.tsv')
     _ensure_recon(f'sub-{sub}', "T1", subjects_dir)
     _ensure_recon(f'sub-{sub}', "trans", subjects_dir)
 
-    raw = mne.io.read_raw(raw_fname)
     raw = normalize_channel_names(raw)
     if op.isfile(electrodes_fname):
         montage = read_montage_from_electrodes_tsv(
@@ -969,7 +972,7 @@ if __name__ == "__main__":
     do_step('Import CT', import_ct, sub, root, tmp_dir, work_dir,
             subjects_dir, fs_subjects_dir)
     do_step("Align CT", align_CT, sub, work_dir, subjects_dir)
-    do_step("Find contacts", find_contacts, sub, root, work_dir, subjects_dir)
+    do_step("Find contacts", find_contacts, sub, root, tmp_dir, work_dir, subjects_dir)
     do_step("Warp to template", warp_to_template, sub, root, work_dir,
             subjects_dir, fs_subjects_dir)
     one_finished = True
