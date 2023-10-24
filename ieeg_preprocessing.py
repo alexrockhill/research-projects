@@ -546,11 +546,13 @@ def find_contacts(sub, root, tmp_dir, work_dir, subjects_dir):
         raw_fname = input("Intracranial recording file path?\t").strip()
         raw = mne.io.read_raw(raw_fname)
         raw.export(op.join(tmp_dir, 'labeling_raw.edf'))
+
+    _ensure_recon(f'sub-{sub}', "T1", subjects_dir)
+    _ensure_recon(f'sub-{sub}', "trans", subjects_dir)
+
     trans = mne.coreg.estimate_head_mri_t(f"sub-{sub}", subjects_dir)
     electrodes_fname = op.join(root, f'sub-{sub}', 'ieeg',
                                f'sub-{sub}_space-ACPC_electrodes.tsv')
-    _ensure_recon(f'sub-{sub}', "T1", subjects_dir)
-    _ensure_recon(f'sub-{sub}', "trans", subjects_dir)
 
     raw = normalize_channel_names(raw)
     if op.isfile(electrodes_fname):
