@@ -22,6 +22,8 @@ import nibabel as nib
 import pd_parser
 from pd_parser.parse_pd import _read_tsv, _to_tsv, _load_data
 from pandas import read_csv, DataFrame
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from templateflow import api as tflow
 from AFQ.api.group import GroupAFQ
@@ -51,7 +53,7 @@ PROCS = dict()
 def print_status(sub, root, work_dir):
     ieeg_dir = op.join(root, f'sub-{sub}', 'ieeg')
     for events_fname in [f for f in os.listdir(ieeg_dir) if
-                         f.endswith('events.tsv')]:
+                         f.endswith('events.tsv') and not f.startswith('.')]:
         name_dict = dict([kv.split('-') for kv in events_fname.split('_')[:-1]])
         print('Task data file complete: {}'.format(name_dict['task']))
     for name, fname in zip(
@@ -755,7 +757,7 @@ def events_tsv(raw):
     return DataFrame(data)
 
 
-def find_events(sub, task, root):
+def find_events(sub, root):
     raw_fname = input("Intracranial recording file path?\t").strip()
     task = input("Task?\t").strip()
     beh_fname = input("Behavior tsv file path?\t").strip()
@@ -790,7 +792,7 @@ def find_events(sub, task, root):
             relative_event_names=["ISI Onset", "Go Cue", "Response"],
         )
         annot, pd_ch_names, df = _load_data(raw)
-    elif task in ("numbers", "food"):
+    elif task in ("numbers", "food", 'ribe'):
         df = read_csv(beh_fname, sep="\t")
         df = df[
             ["number", "trial_type"]
@@ -806,6 +808,7 @@ def find_events(sub, task, root):
             ]
         ]
         df = df.fillna("n/a")
+        df.loc[df['response_time'] == 'undefined', 'response_time'] = 'n/a'
         for col in ("fixation_start", "stimulus_start", "iti_start"):
             df.loc[:, col] = [t / 1000 for t in df[col]]
         df.loc[:, "stimulus_start"] -= df["fixation_start"]
@@ -848,6 +851,7 @@ def find_events(sub, task, root):
             pd_event_name="Cue1",
             zscore=25,
             max_len=2,
+            exclude_shift=0.075,
             beh="tmp.tsv",
             beh_key="stimulus_start",
             recover=True,
@@ -880,10 +884,11 @@ def find_events(sub, task, root):
         df = df[["stimuli", "block_i", "correct", "response_time", "stimulus_start"]]
         df.loc[:, "pd_parser_sample"] = [np.nan if i == 'n/a' else i for i in pd_samples]
         df.loc[:, "stimulus_start"] = [t / 1000 for t in df["stimulus_start"]]
-        df.loc[:, "response_time"] = [
-            int(t) / 1000 if isinstance(t, str) and t.isdigit() else "n/a"
-            for t in df["response_time"]
-        ]
+        df = df[~np.isnan(df['pd_parser_sample'])]
+        annot = mne.annotations_from_events(np.array([
+            df['pd_parser_sample'], [0] * len(df), [1] * len(df)]).T,
+            raw.info['sfreq'])
+        df = df.drop(columns=['pd_parser_sample'])
     else:
         df = None
     bids_path = mne_bids.BIDSPath(subject=str(sub), task=task, run=run, root=root)
@@ -951,7 +956,7 @@ if __name__ == "__main__":
                 env=os.environ,
             )
             PROCS['template-recon-all'] = proc
-    root = input('BIDS directory?\t')
+    root = input('BIDS directory?\t').strip()
     sub = input("Subject ID number?\t")
     subjects_dir = op.join(root, "derivatives", "freesurfer")
     work_dir = op.join(root, "derivatives", "ieeg-preprocessing", f"sub-{sub}")
