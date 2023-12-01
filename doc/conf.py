@@ -30,3 +30,7 @@ sphinx_gallery_conf = {
 
 html_theme = 'alabaster'
 html_static_path = ['_static']
+
+bibtex_bibfiles = ['./references.bib']
+bibtex_style = 'unsrt'
+bibtex_footbibliography_header = ''
