@@ -6,6 +6,8 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import sphinx_bootstrap_theme
+
 project = 'research-projects'
 copyright = '2023, Alexander P. Rockhill'
 author = 'Alexander P. Rockhill'
@@ -15,6 +17,8 @@ author = 'Alexander P. Rockhill'
 
 extensions = [
     'sphinx_gallery.gen_gallery',
+    "sphinx.ext.intersphinx",
+    "sphinxcontrib.bibtex",
 ]
 
 templates_path = ['_templates']
@@ -28,8 +32,22 @@ sphinx_gallery_conf = {
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'alabaster'
-html_static_path = ['_static']
+html_theme = 'bootstrap'
+html_theme_path = sphinx_bootstrap_theme.get_html_theme_path()
+html_theme_options = {
+    'navbar_title': f'{project}',
+    'bootswatch_theme': "flatly",
+    'navbar_sidebarrel': False,  # no "previous / next" navigation
+    'navbar_pagenav': False,  # no "Page" navigation in sidebar
+    'bootstrap_version': "3",
+    'navbar_links': [
+        ("Examples", "auto_examples/index"),
+        ("GitHub", f"https://github.com/alexrockhill/{project}", True),
+    ]}
+
+intersphinx_mapping = {
+    "mne": ("https://mne.tools/stable", None),
+}
 
 bibtex_bibfiles = ['./references.bib']
 bibtex_style = 'unsrt'

@@ -1,8 +1,15 @@
 :orphan:
 
+.. _research_projects:
+
 Research Project Analyses
 =========================
 
+Here we show some exemplary analyses.
+
+.. contents:: Contents
+   :local:
+   :depth: 3
 
 
 
@@ -13,7 +20,30 @@ Research Project Analyses
 
 .. raw:: html
 
+    <div class="sphx-glr-thumbcontainer" tooltip="The objective of this tutorial is to describe the basics of power spectral density and what it ...">
+
+.. only:: html
+
+  .. image:: /auto_examples/images/thumb/sphx_glr_plot_power_spectral_density_thumb.png
+    :alt:
+
+  :ref:`sphx_glr_auto_examples_plot_power_spectral_density.py`
+
+.. raw:: html
+
+      <div class="sphx-glr-thumbnail-title">Power Spectral Density Analysis: Spectral Decoupling</div>
     </div>
+
+
+.. raw:: html
+
+    </div>
+
+
+.. toctree::
+   :hidden:
+
+   /auto_examples/plot_power_spectral_density
 
 
 .. only:: html
